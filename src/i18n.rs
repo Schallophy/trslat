@@ -21,7 +21,7 @@ pub const ZH_CN: LanguageIdentifier = langid!("zh-CN");
 /// Returns the language of the user-facing messages (only English and
 /// Simplified Chinese are supported).
 ///
-/// Locale detection order:
+/// Precedence detection order:
 ///  1. `LC_ALL`, `LC_MESSAGES`, `LANG` environment variables (most explicit)
 ///  2. the operating system's reported locale
 pub fn detect() -> LanguageIdentifier {
@@ -30,7 +30,12 @@ pub fn detect() -> LanguageIdentifier {
         .filter_map(|k| std::env::var_os(k))
         .filter_map(|v| v.into_string().ok())
         .find(|v| !v.is_empty() && v != "C" && !v.starts_with("C."));
-    let raw = from_env.or_else(sys_locale::get_locale);
+    pick(from_env.or_else(sys_locale::get_locale).as_deref())
+}
+
+/// Map a raw locale string to the supported language. Pure, so it is safe to
+/// unit test without touching the environment.
+fn pick(raw: Option<&str>) -> LanguageIdentifier {
     match raw.map(|l| l.to_ascii_lowercase()) {
         Some(l) if l.starts_with("zh") => ZH_CN,
         _ => EN,
@@ -106,13 +111,11 @@ mod tests {
     }
 
     #[test]
-    fn detect_prefers_english_env() {
-        // Edition 2024 makes these unsafe when called in multi-threaded tests.
-        unsafe {
-            std::env::set_var("LANG", "en_US.UTF-8");
-            assert_eq!(detect(), EN);
-            std::env::set_var("LANG", "zh_CN.UTF-8");
-            assert_eq!(detect(), ZH_CN);
-        }
+    fn pick_maps_zh_and_english() {
+        assert_eq!(pick(Some("en_US.UTF-8")), EN);
+        assert_eq!(pick(Some("zh_CN.UTF-8")), ZH_CN);
+        assert_eq!(pick(Some("zh-Hans-CN")), ZH_CN);
+        assert_eq!(pick(Some("C")), EN);
+        assert_eq!(pick(None), EN);
     }
 }
