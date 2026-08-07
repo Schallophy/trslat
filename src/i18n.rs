@@ -75,7 +75,6 @@ pub fn localize(mut cmd: Command, lang: &LanguageIdentifier) -> Command {
         ("text", "arg-text"),
         ("source", "arg-source"),
         ("target", "arg-target"),
-        ("from_stdin", "arg-from-stdin"),
         ("verbose", "arg-verbose"),
         ("api", "arg-api"),
     ];
@@ -93,7 +92,7 @@ mod tests {
     #[test]
     fn english_messages() {
         assert_eq!(t(&EN, "about"), "Free CLI for Chinese <-> English auto translation");
-        assert_eq!(t(&EN, "err-no-text"), "Error: provide the text argument, or use -f to read from stdin");
+        assert_eq!(t(&EN, "err-no-text"), "Error: provide the text argument, or read from stdin (e.g. `echo hi | trslat`)");
         assert_eq!(
             t_args(&EN, "verbose", Args::new().set("api", "bing").set("ms", "123")),
             "api = bing, latency = 123 ms"
@@ -103,7 +102,7 @@ mod tests {
     #[test]
     fn chinese_messages() {
         assert_eq!(t(&ZH_CN, "about"), "免费翻译 CLI：中文 <-> 英文 自动翻译");
-        assert_eq!(t(&ZH_CN, "err-no-text"), "错误：请提供文本参数，或用 -f 从标准输入读取");
+        assert_eq!(t(&ZH_CN, "err-no-text"), "错误：请提供文本参数，或从标准输入读取（如 `echo hi | trslat`）");
         assert_eq!(
             t_args(&ZH_CN, "verbose", Args::new().set("api", "bing").set("ms", "123")),
             "api = bing，请求耗时 = 123 ms"

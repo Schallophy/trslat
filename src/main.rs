@@ -1,5 +1,5 @@
 use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
-use std::io::{self, Read};
+use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
 
 mod bing;
@@ -39,10 +39,6 @@ struct Cli {
 
     /// placeholder
     #[arg(short, long)]
-    from_stdin: bool,
-
-    /// placeholder
-    #[arg(short, long)]
     verbose: bool,
 
     /// placeholder
@@ -60,7 +56,7 @@ async fn main() -> ExitCode {
     let cli = Cli::from_arg_matches(&i18n::localize(Cli::command(), &locale).get_matches())
         .unwrap_or_else(|e| e.exit());
 
-    let text = match (&cli.text, cli.from_stdin) {
+    let text = match (&cli.text, !io::stdin().is_terminal()) {
         (Some(t), _) => t.clone(),
         (None, true) => {
             let mut buf = String::new();
