@@ -10,6 +10,10 @@ err-stdin = Error: failed to read from standard input
 err-no-text = Error: provide the text argument, or read from stdin (e.g. `echo hi | trslat`)
 err-empty = Error: input text is empty
 err-no-result = Error: translation result is empty, check network and retry
-err-translate = Error: translation failed – {$error}
+err-network = Error: network request failed – {$error}
+err-token = Error: failed to parse Bing anti-abuse token – {$error}
+err-rejected = Error: translation request rejected (status {$status})
+err-malformed = Error: unexpected response format – {$error}
+err-provider = Error: translation provider failed – {$error}
 
 verbose = api = {$api}, latency = {$ms} ms

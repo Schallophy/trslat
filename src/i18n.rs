@@ -2,6 +2,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use clap::Command;
+use crate::error::TranslateError;
+
 use fluent_bundle::FluentValue;
 use fluent_templates::{LanguageIdentifier, Loader, langid, static_loader};
 
@@ -27,7 +29,7 @@ pub const ZH_CN: LanguageIdentifier = langid!("zh-CN");
 pub fn detect() -> LanguageIdentifier {
     let from_env = ["LC_ALL", "LC_MESSAGES", "LANG"]
         .iter()
-        .filter_map(|k| std::env::var_os(k))
+        .filter_map(std::env::var_os)
         .filter_map(|v| v.into_string().ok())
         .find(|v| !v.is_empty() && v != "C" && !v.starts_with("C."));
     pick(from_env.or_else(sys_locale::get_locale).as_deref())
@@ -50,6 +52,31 @@ pub fn t(lang: &LanguageIdentifier, key: &str) -> String {
 /// Look up a message with interpolated variables (e.g. `{$api}`, `{$ms}`).
 pub fn t_args(lang: &LanguageIdentifier, key: &str, vars: &Args) -> String {
     LOCALES.lookup_with_args(lang, key, &vars.0)
+}
+
+/// Localize a `TranslateError` into a user-facing message.
+pub fn render_error(lang: &LanguageIdentifier, e: &TranslateError) -> String {
+    match e {
+        TranslateError::Network(err) => {
+            t_args(lang, "err-network", Args::new().set("error", err.clone()))
+        }
+        TranslateError::TokenParse(err) => {
+            t_args(lang, "err-token", Args::new().set("error", err.clone()))
+        }
+        TranslateError::ApiRejected(status) => {
+            t_args(lang, "err-rejected", Args::new().set("status", status.to_string()))
+        }
+        TranslateError::Malformed(err) => {
+            t_args(lang, "err-malformed", Args::new().set("error", err.clone()))
+        }
+        TranslateError::Provider(err) => {
+            t_args(lang, "err-provider", Args::new().set("error", err.clone()))
+        }
+        TranslateError::Empty => t(lang, "err-empty"),
+        TranslateError::NoResult => t(lang, "err-no-result"),
+        TranslateError::Stdin => t(lang, "err-stdin"),
+        TranslateError::NoInput => t(lang, "err-no-text"),
+    }
 }
 
 /// Ordered map of variables for interpolation.
@@ -88,6 +115,7 @@ pub fn localize(mut cmd: Command, lang: &LanguageIdentifier) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::TranslateError;
 
     #[test]
     fn english_messages() {
@@ -96,6 +124,10 @@ mod tests {
         assert_eq!(
             t_args(&EN, "verbose", Args::new().set("api", "bing").set("ms", "123")),
             "api = bing, latency = 123 ms"
+        );
+        assert_eq!(
+            render_error(&EN, &TranslateError::ApiRejected(403)),
+            "Error: translation request rejected (status 403)"
         );
     }
 
@@ -106,6 +138,10 @@ mod tests {
         assert_eq!(
             t_args(&ZH_CN, "verbose", Args::new().set("api", "bing").set("ms", "123")),
             "api = bing，请求耗时 = 123 ms"
+        );
+        assert_eq!(
+            render_error(&ZH_CN, &TranslateError::ApiRejected(403)),
+            "错误：翻译请求被拒绝（状态 403）"
         );
     }
 

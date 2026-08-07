@@ -1,11 +1,29 @@
 use regex::Regex;
 use reqwest::Client;
 use serde_json::{json, Value};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::error::TranslateError;
 
 const TRANSLATE_PAGE: &str = "https://cn.bing.com/translator";
 const TRANSLATE_API: &str = "https://cn.bing.com/ttranslatev3?isVertical=1";
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/151.0.4129.59";
+
+fn re_ig() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"IG:"([^"]+)""#).unwrap())
+}
+
+fn re_iid() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"data-iid="([^"]+)""#).unwrap())
+}
+
+fn re_aph() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"params_AbusePreventionHelper\s*=\s*(\[[^\]]+\])"#).unwrap())
+}
 
 pub struct BingSession {
     ig: String,
@@ -23,56 +41,54 @@ fn now_ms() -> u64 {
 }
 
 impl BingSession {
-    pub async fn new(client: &Client) -> Result<Self, String> {
+    pub async fn new(client: &Client) -> Result<Self, TranslateError> {
         if let Some(cached) = BingSession::load_cache() {
             return Ok(cached);
         }
         let fresh = BingSession::fetch(client).await;
-        match &fresh {
-            Ok(s) => s.save_cache(),
-            Err(_) => {}
+        if let Ok(s) = &fresh {
+            s.save_cache();
         }
         fresh
     }
 
-    async fn fetch(client: &Client) -> Result<Self, String> {
+    async fn fetch(client: &Client) -> Result<Self, TranslateError> {
         let html = client
             .get(TRANSLATE_PAGE)
             .header("User-Agent", USER_AGENT)
             .send()
             .await
-            .map_err(|e| format!("加载翻译页失败：{e}"))?
+            .map_err(|e| TranslateError::Network(format!("load translator page: {e}")))?
             .text()
             .await
-            .map_err(|e| format!("读取翻译页失败：{e}"))?;
+            .map_err(|e| TranslateError::Network(format!("read translator page: {e}")))?;
+        Self::parse_session(&html)
+    }
 
-        let re_ig = Regex::new(r#"IG:"([^"]+)""#).unwrap();
-        let re_iid = Regex::new(r#"data-iid="([^"]+)""#).unwrap();
-        let re_aph = Regex::new(r#"params_AbusePreventionHelper\s*=\s*(\[[^\]]+\])"#).unwrap();
-
-        let ig = re_ig
-            .captures(&html)
+    fn parse_session(html: &str) -> Result<Self, TranslateError> {
+        let ig = re_ig()
+            .captures(html)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string())
-            .ok_or_else(|| "未从页面解析到 IG".to_string())?;
-        let iid = re_iid
-            .captures(&html)
+            .ok_or_else(|| TranslateError::TokenParse("IG not found".into()))?;
+        let iid = re_iid()
+            .captures(html)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string())
-            .ok_or_else(|| "未从页面解析到 IID".to_string())?;
-        let aph_raw = re_aph
-            .captures(&html)
+            .ok_or_else(|| TranslateError::TokenParse("IID not found".into()))?;
+        let aph_raw = re_aph()
+            .captures(html)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string())
-            .ok_or_else(|| "未从页面解析到防滥用令牌".to_string())?;
-        let aph: Value =
-            serde_json::from_str(&aph_raw).map_err(|e| format!("解析防滥用令牌失败：{e}"))?;
+            .ok_or_else(|| TranslateError::TokenParse("anti-abuse token not found".into()))?;
+        let aph: Value = serde_json::from_str(&aph_raw)
+            .map_err(|e| TranslateError::TokenParse(format!("parse token JSON: {e}")))?;
         let key = aph[0].as_i64().unwrap_or_default().to_string();
         let token = aph[1].as_str().unwrap_or_default().to_string();
         let interval_ms = aph[2].as_i64().unwrap_or(3_600_000) as u64;
 
         if key.is_empty() || token.is_empty() {
-            return Err("解析的防滥用令牌为空".into());
+            return Err(TranslateError::TokenParse("parsed token is empty".into()));
         }
 
         Ok(BingSession {
@@ -118,7 +134,13 @@ impl BingSession {
     }
 }
 
-pub async fn translate(client: &Client, session: &BingSession, text: &str, source: &str, target: &str) -> Result<String, String> {
+pub async fn translate(
+    client: &Client,
+    session: &BingSession,
+    text: &str,
+    source: &str,
+    target: &str,
+) -> Result<String, TranslateError> {
     let x_target = normalize_target(target);
     let x_source = if source.is_empty() { "auto-detect" } else { source };
 
@@ -135,22 +157,30 @@ pub async fn translate(client: &Client, session: &BingSession, text: &str, sourc
         ])
         .send()
         .await
-        .map_err(|e| format!("翻译请求失败：{e}"))?
+        .map_err(|e| TranslateError::Network(format!("translation request failed: {e}")))?
         .json::<Value>()
         .await
-        .map_err(|e| format!("解析响应失败：{e}"))?;
+        .map_err(|e| TranslateError::Network(format!("parse response: {e}")))?;
 
-    if let Some(err) = body.get("statusCode").and_then(|v| v.as_i64()) {
-        return Err(format!("翻译请求被拒绝（状态 {err}）"));
+    parse_translation(&body)
+}
+
+fn parse_translation(body: &Value) -> Result<String, TranslateError> {
+    if let Some(status) = body.get("statusCode").and_then(|v| v.as_i64()) {
+        return Err(TranslateError::ApiRejected(status));
     }
-
     body[0]["translations"][0]["text"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("响应格式异常：{body}"))
+        .ok_or_else(|| TranslateError::Malformed(body.to_string()))
 }
 
-pub async fn translate_smart(client: &Client, text: &str, source: &str, target: &str) -> Result<String, String> {
+pub async fn translate_smart(
+    client: &Client,
+    text: &str,
+    source: &str,
+    target: &str,
+) -> Result<String, TranslateError> {
     let session = BingSession::new(client).await?;
     match translate(client, &session, text, source, target).await {
         Ok(v) => Ok(v),
@@ -165,5 +195,51 @@ fn normalize_target(target: &str) -> &str {
     match target {
         "zh" | "zh-CN" => "zh-Hans",
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE_HTML: &str = r#"IG:"A1B2C3" data-iid="translator.5024" params_AbusePreventionHelper = [12345,"tok123",3600000];"#;
+
+    #[test]
+    fn parses_session_from_html() {
+        let s = BingSession::parse_session(SAMPLE_HTML).unwrap();
+        assert_eq!(s.ig, "A1B2C3");
+        assert_eq!(s.iid, "translator.5024");
+        assert_eq!(s.key, "12345");
+        assert_eq!(s.token, "tok123");
+    }
+
+    #[test]
+    fn session_parse_errors_missing_parts() {
+        assert!(BingSession::parse_session("no tokens here").is_err());
+    }
+
+    #[test]
+    fn parses_success_translation() {
+        let v = json!([{"translations":[{"text":"你好"}]}]);
+        assert_eq!(parse_translation(&v).unwrap(), "你好");
+    }
+
+    #[test]
+    fn translation_rejected_status() {
+        let v = json!({"statusCode": 403});
+        assert!(matches!(parse_translation(&v), Err(TranslateError::ApiRejected(403))));
+    }
+
+    #[test]
+    fn translation_malformed() {
+        let v = json!({"unexpected": true});
+        assert!(matches!(parse_translation(&v), Err(TranslateError::Malformed(_))));
+    }
+
+    #[test]
+    fn normalizes_target() {
+        assert_eq!(normalize_target("zh"), "zh-Hans");
+        assert_eq!(normalize_target("zh-CN"), "zh-Hans");
+        assert_eq!(normalize_target("en"), "en");
     }
 }

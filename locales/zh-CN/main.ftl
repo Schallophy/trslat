@@ -9,6 +9,10 @@ err-stdin = 错误：从标准输入读取失败
 err-no-text = 错误：请提供文本参数，或从标准输入读取（如 `echo hi | trslat`）
 err-empty = 错误：输入文本为空
 err-no-result = 错误：翻译结果为空，请检查网络连接后重试
-err-translate = 错误：翻译失败 – {$error}
+err-network = 错误：网络请求失败 – {$error}
+err-token = 错误：解析必应防滥用令牌失败 – {$error}
+err-rejected = 错误：翻译请求被拒绝（状态 {$status}）
+err-malformed = 错误：响应格式异常 – {$error}
+err-provider = 错误：翻译服务错误 – {$error}
 
 verbose = api = {$api}，请求耗时 = {$ms} ms

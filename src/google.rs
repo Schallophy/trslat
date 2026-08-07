@@ -1,9 +1,11 @@
 use translators::{GoogleTranslator, Translator};
 
-pub async fn translate(text: &str, source: &str, target: &str) -> Result<String, String> {
+use crate::error::TranslateError;
+
+pub async fn translate(text: &str, source: &str, target: &str) -> Result<String, TranslateError> {
     let translator = GoogleTranslator::default();
     translator
         .translate_async(text, source, target)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| TranslateError::Provider(e.to_string()))
 }

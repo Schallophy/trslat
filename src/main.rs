@@ -1,8 +1,12 @@
 use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
+use fluent_templates::LanguageIdentifier;
 use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
 
+use error::TranslateError;
+
 mod bing;
+mod error;
 mod google;
 mod i18n;
 
@@ -25,63 +29,70 @@ impl Api {
 #[derive(Parser)]
 #[command(name = "trslat", version)]
 struct Cli {
-    /// placeholder
+    /// Text to translate, or read from stdin when piped
     #[arg(value_name = "TEXT")]
     text: Option<String>,
 
-    /// placeholder
+    /// Target language code, e.g. en / zh-CN, auto-detected by default
     #[arg(short, long)]
     target: Option<String>,
 
-    /// placeholder
+    /// Source language code, auto-detect by default
     #[arg(short, long)]
     source: Option<String>,
 
-    /// placeholder
+    /// Show request-to-success latency in milliseconds
     #[arg(short, long)]
     verbose: bool,
 
-    /// placeholder
+    /// Translation API: bing (default) or google
     #[arg(short = 'a', long, value_enum, default_value_t = Api::Bing)]
     api: Api,
 }
 
-fn is_chinese(s: &str) -> bool {
-    s.chars().any(|c| (0x4E00..=0x9FFF).contains(&(c as u32)))
+/// Whether the text contains CJK characters, driving the auto-target heuristic.
+///
+/// Covers the CJK Unified Ideographs block plus extension A/B, CJK
+/// punctuation, and Japanese kana. A presence check is enough for this
+/// heuristic; it does not attempt full language identification.
+fn is_cjk(s: &str) -> bool {
+    s.chars().any(|c| match c as u32 {
+        // CJK Unified Ideographs
+        0x4E00..=0x9FFF
+        // CJK Extension A
+        | 0x3400..=0x4DBF
+        // CJK Extension B
+        | 0x20000..=0x2A6DF
+        // CJK punctuation
+        | 0x3000..=0x303F
+        // Hiragana / Katakana
+        | 0x3040..=0x30FF => true,
+        _ => false,
+    })
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    let locale = i18n::detect();
-    let cli = Cli::from_arg_matches(&i18n::localize(Cli::command(), &locale).get_matches())
-        .unwrap_or_else(|e| e.exit());
-
+async fn run(cli: &Cli) -> Result<String, TranslateError> {
     let text = match (&cli.text, !io::stdin().is_terminal()) {
         (Some(t), _) => t.clone(),
         (None, true) => {
             let mut buf = String::new();
-            if io::stdin().read_to_string(&mut buf).is_err() {
-                eprintln!("{}", i18n::t(&locale, "err-stdin"));
-                return ExitCode::FAILURE;
-            }
+            io::stdin()
+                .read_to_string(&mut buf)
+                .map_err(|_| TranslateError::Stdin)?;
             buf
         }
-        (None, false) => {
-            eprintln!("{}", i18n::t(&locale, "err-no-text"));
-            return ExitCode::FAILURE;
-        }
+        (None, false) => return Err(TranslateError::NoInput),
     };
 
     let text = text.trim().to_string();
     if text.is_empty() {
-        eprintln!("{}", i18n::t(&locale, "err-empty"));
-        return ExitCode::FAILURE;
+        return Err(TranslateError::Empty);
     }
 
     let target = match &cli.target {
         Some(t) => t.clone(),
         None => {
-            if is_chinese(&text) {
+            if is_cjk(&text) {
                 "en".to_string()
             } else {
                 "zh-CN".to_string()
@@ -91,52 +102,70 @@ async fn main() -> ExitCode {
 
     let source = cli.source.clone().unwrap_or_default();
 
-    let start = std::time::Instant::now();
-    let result: Result<String, String> = match cli.api {
+    match cli.api {
         Api::Google => google::translate(&text, &source, &target).await,
         Api::Bing => {
             let client = reqwest::Client::new();
             bing::translate_smart(&client, &text, &source, &target).await
         }
-    };
+    }
+}
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    let locale = i18n::detect();
+    let cli = Cli::from_arg_matches(&i18n::localize(Cli::command(), &locale).get_matches())
+        .unwrap_or_else(|e| e.exit());
+
+    let start = std::time::Instant::now();
+    let outcome = run(&cli)
+        .await
+        .and_then(|output| match output.trim() {
+            "" => Err(TranslateError::NoResult),
+            trimmed => Ok(trimmed.to_string()),
+        });
     let elapsed_ms = start.elapsed().as_millis();
 
-    match result {
-        Ok(result) => {
-            let output = result.trim();
-            if output.is_empty() {
-                eprintln!("{}", i18n::t(&locale, "err-no-result"));
-                return ExitCode::FAILURE;
-            }
-            if cli.verbose {
-                let msg = i18n::t_args(
-                    &locale,
-                    "verbose",
-                    i18n::Args::new()
-                        .set("ms", format!("{elapsed_ms}"))
-                        .set("api", cli.api.name()),
-                );
-                eprintln!("[trslat] {msg}");
-            }
+    if cli.verbose {
+        print_verbose(&locale, cli.api.name(), elapsed_ms);
+    }
+
+    match outcome {
+        Ok(output) => {
             println!("{output}");
             ExitCode::SUCCESS
         }
         Err(e) => {
-            if cli.verbose {
-                let msg = i18n::t_args(
-                    &locale,
-                    "verbose",
-                    i18n::Args::new()
-                        .set("ms", format!("{elapsed_ms}"))
-                        .set("api", cli.api.name()),
-                );
-                eprintln!("[trslat] {msg}");
-            }
-            eprintln!(
-                "{}",
-                i18n::t_args(&locale, "err-translate", &i18n::Args::new().set("error", e))
-            );
+            eprintln!("{}", i18n::render_error(&locale, &e));
             ExitCode::FAILURE
         }
+    }
+}
+
+fn print_verbose(locale: &LanguageIdentifier, api: &str, elapsed_ms: u128) {
+    let msg = i18n::t_args(
+        locale,
+        "verbose",
+        i18n::Args::new()
+            .set("ms", format!("{elapsed_ms}"))
+            .set("api", api),
+    );
+    eprintln!("[trslat] {msg}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cjk_detection() {
+        assert!(is_cjk("你好"));
+        assert!(is_cjk("早"));
+        assert!(is_cjk("𠮷")); // CJK Extension B
+        assert!(is_cjk("「引号」")); // CJK punctuation
+        assert!(is_cjk("こんにちは")); // Hiragana
+        assert!(is_cjk("hello 世界"));
+        assert!(!is_cjk("hello world"));
+        assert!(!is_cjk("12345"));
     }
 }

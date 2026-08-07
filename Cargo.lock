@@ -1715,6 +1715,7 @@ dependencies = [
  "reqwest",
  "serde_json",
  "sys-locale",
+ "thiserror 2.0.19",
  "tokio",
  "translators",
 ]
