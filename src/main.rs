@@ -1,9 +1,9 @@
 use clap::{Parser, ValueEnum};
 use std::io::{self, Read};
 use std::process::ExitCode;
-use translators::{GoogleTranslator, Translator};
 
 mod bing;
+mod google;
 
 #[derive(Clone, Copy, Default, ValueEnum)]
 enum Api {
@@ -95,13 +95,7 @@ async fn main() -> ExitCode {
 
     let start = std::time::Instant::now();
     let result: Result<String, String> = match cli.api {
-        Api::Google => {
-            let translator = GoogleTranslator::default();
-            translator
-                .translate_async(&text, &source, &target)
-                .await
-                .map_err(|e| e.to_string())
-        }
+        Api::Google => google::translate(&text, &source, &target).await,
         Api::Bing => {
             let client = reqwest::Client::new();
             bing::translate_smart(&client, &text, &source, &target).await
