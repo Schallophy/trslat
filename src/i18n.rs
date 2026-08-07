@@ -18,11 +18,21 @@ static_loader! {
 pub const EN: LanguageIdentifier = langid!("en");
 pub const ZH_CN: LanguageIdentifier = langid!("zh-CN");
 
-/// Returns the language of the user-facing messages, based on the system locale
-/// (only English and Simplified Chinese are supported).
+/// Returns the language of the user-facing messages (only English and
+/// Simplified Chinese are supported).
+///
+/// Locale detection order:
+///  1. `LC_ALL`, `LC_MESSAGES`, `LANG` environment variables (most explicit)
+///  2. the operating system's reported locale
 pub fn detect() -> LanguageIdentifier {
-    match sys_locale::get_locale() {
-        Some(l) if l.to_ascii_lowercase().starts_with("zh") => ZH_CN,
+    let from_env = ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .iter()
+        .filter_map(|k| std::env::var_os(k))
+        .filter_map(|v| v.into_string().ok())
+        .find(|v| !v.is_empty() && v != "C" && !v.starts_with("C."));
+    let raw = from_env.or_else(sys_locale::get_locale);
+    match raw.map(|l| l.to_ascii_lowercase()) {
+        Some(l) if l.starts_with("zh") => ZH_CN,
         _ => EN,
     }
 }
@@ -96,8 +106,13 @@ mod tests {
     }
 
     #[test]
-    fn detect_prefers_chinese() {
-        // zh-Hans-CN maps to ZH_CN
-        assert_eq!(detect(), ZH_CN);
+    fn detect_prefers_english_env() {
+        // Edition 2024 makes these unsafe when called in multi-threaded tests.
+        unsafe {
+            std::env::set_var("LANG", "en_US.UTF-8");
+            assert_eq!(detect(), EN);
+            std::env::set_var("LANG", "zh_CN.UTF-8");
+            assert_eq!(detect(), ZH_CN);
+        }
     }
 }
