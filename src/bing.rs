@@ -184,11 +184,23 @@ pub async fn translate_smart(
     let session = BingSession::new(client).await?;
     match translate(client, &session, text, source, target).await {
         Ok(v) => Ok(v),
-        Err(_) => {
+        Err(e) if retryable(&e) => {
             let fresh = BingSession::fetch(client).await?;
             translate(client, &fresh, text, source, target).await
         }
+        Err(e) => Err(e),
     }
+}
+
+/// A translation failure worth recovering from by refreshing the session.
+///
+/// Network errors are not retried: a fresh session cannot fix a dead
+/// connection, and retrying would only waste a request.
+fn retryable(e: &TranslateError) -> bool {
+    matches!(
+        e,
+        TranslateError::ApiRejected(_) | TranslateError::Malformed(_) | TranslateError::TokenParse(_)
+    )
 }
 
 fn normalize_target(target: &str) -> &str {

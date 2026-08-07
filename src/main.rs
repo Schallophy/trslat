@@ -2,6 +2,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
 use fluent_templates::LanguageIdentifier;
 use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
+use std::sync::OnceLock;
 
 use error::TranslateError;
 
@@ -104,11 +105,14 @@ async fn run(cli: &Cli) -> Result<String, TranslateError> {
 
     match cli.api {
         Api::Google => google::translate(&text, &source, &target).await,
-        Api::Bing => {
-            let client = reqwest::Client::new();
-            bing::translate_smart(&client, &text, &source, &target).await
-        }
+        Api::Bing => bing::translate_smart(shared_client(), &text, &source, &target).await,
     }
+}
+
+/// Lazily shared HTTP client, reused across the initial request and any retry.
+fn shared_client() -> &'static reqwest::Client {
+    static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
+    HTTP.get_or_init(reqwest::Client::new)
 }
 
 #[tokio::main]
