@@ -31,8 +31,8 @@ impl Api {
 #[command(name = "trslat", version)]
 struct Cli {
     /// Text to translate, or read from stdin when piped
-    #[arg(value_name = "TEXT")]
-    text: Option<String>,
+    #[arg(value_name = "TEXT", num_args = 1..)]
+    text: Vec<String>,
 
     /// Target language code, e.g. en / zh-CN, auto-detected by default
     #[arg(short, long)]
@@ -73,16 +73,16 @@ fn is_cjk(s: &str) -> bool {
 }
 
 async fn run(cli: &Cli) -> Result<String, TranslateError> {
-    let text = match (&cli.text, !io::stdin().is_terminal()) {
-        (Some(t), _) => t.clone(),
-        (None, true) => {
+    let text = match (cli.text.is_empty(), !io::stdin().is_terminal()) {
+        (false, _) => cli.text.join(" "),
+        (true, true) => {
             let mut buf = String::new();
             io::stdin()
                 .read_to_string(&mut buf)
                 .map_err(|_| TranslateError::Stdin)?;
             buf
         }
-        (None, false) => return Err(TranslateError::NoInput),
+        (true, false) => return Err(TranslateError::NoInput),
     };
 
     let text = text.trim().to_string();
